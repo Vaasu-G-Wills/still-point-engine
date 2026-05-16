@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+stillpoint_env/
+*.egg-info/
+.eggs/
+
+# Output & generated files
+output/
+*.mp4
+*.wav
+*.json
+!package.json
+!package-lock.json
+!tsconfig*.json
+!vite.config.*
+chroma_storage/
+engine_state.db
+.pexels_cache/
+
+# Auth tokens (sensitive!)
+token*.json
+client_secret.json
+
+# Frontend build
+frontend/node_modules/
+frontend/dist/
+
+# Fonts (downloaded at runtime)
+Roboto-Regular.ttf
+
+# Temp files
+_tmp/
+node_*TEMP_MPY*.mp4
+*.egg
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
