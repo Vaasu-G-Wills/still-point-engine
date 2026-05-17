@@ -19,8 +19,9 @@ class SearchRequest(BaseModel):
 class AutoFetchRequest(BaseModel):
     topic:       str
     sections:    dict
-    folder_path: str
-    use_videos:  bool = False
+    folder_path:      str
+    use_videos:       bool = False
+    channel_template: str  = "still_point"
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -60,6 +61,7 @@ def pexels_auto(req: AutoFetchRequest):
             sections=req.sections,
             dest_dir=dest_dir,
             use_videos=req.use_videos,
+            channel_template=req.channel_template,
         )
         return result
     except ValueError as e:
@@ -73,6 +75,7 @@ class ContextualRequest(BaseModel):
     sections:            dict
     folder_path:         str
     sentences_per_chunk: int  = 4
+    channel_template:    str  = "still_point"
 
 
 @router.post("/pexels/contextual")
@@ -97,6 +100,7 @@ def pexels_contextual(req: ContextualRequest):
             sections            = req.sections,
             dest_dir            = dest_dir,
             sentences_per_chunk = req.sentences_per_chunk,
+            channel_template    = req.channel_template,
         )
         # Summary for UI display
         summary = {
@@ -135,6 +139,13 @@ def pexels_download(body: dict):
         return {"path": local_path, "section": section}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/pexels/library")
+def pexels_library(limit: int = 100):
+    """Returns the history of all downloaded Pexels assets."""
+    from db import get_pexels_library
+    return {"library": get_pexels_library(limit=limit)}
 
 
 @router.get("/pexels/key-status")

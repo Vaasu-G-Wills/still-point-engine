@@ -5,10 +5,16 @@ import { RefreshCw, Play, ChevronRight, ArrowLeft, FolderOpen, X, Move } from 'l
 import axios from 'axios'
 import FolderBrowser from '../components/FolderBrowser'
 
-const NODES = [
-  {key:'hook',label:'🎯 Hook'},{key:'thesis',label:'📖 Thesis'},{key:'bridge_ab',label:'🔗 Bridge A→B'},
-  {key:'antithesis',label:'⚡ Antithesis'},{key:'bridge_bc',label:'🔗 Bridge B→C'},{key:'synthesis',label:'⚖️ Synthesis'},
-]
+const TEMPLATES = {
+  still_point: [
+    {key:'hook',label:'🎯 Hook'},{key:'thesis',label:'📖 Thesis'},{key:'bridge_ab',label:'🔗 Bridge A→B'},
+    {key:'antithesis',label:'⚡ Antithesis'},{key:'bridge_bc',label:'🔗 Bridge B→C'},{key:'synthesis',label:'⚖️ Synthesis'},
+  ],
+  zerourgency: [
+    {key:'hook',label:'🎯 Hook'},{key:'context',label:'📖 Context & History'},
+    {key:'deep_dive',label:'⚡ Deep Dive'},{key:'takeaway',label:'⚖️ Takeaway'},
+  ]
+}
 
 async function readSSE(url, opts, onEvent) {
   const res = await fetch(url, opts)
@@ -28,6 +34,7 @@ async function readSSE(url, opts, onEvent) {
 /* ══ PHASE 1 ══════════════════════════════════════════════════ */
 function Phase1({ projectId }) {
   const { topic, setTopic, ttsVoice, setTtsVoice, wordByWord, setWordByWord,
+          channelTemplate, setChannelTemplate, setProjectId,
           addLog, clearLog, setNode, clearNodes, setOutputData, setPhase, logLines, nodes } = usePipeline()
   const [busy,        setBusy]        = useState(false)
   const [voices,      setVoices]      = useState([])
@@ -45,12 +52,34 @@ function Phase1({ projectId }) {
   const generate = async () => {
     clearLog(); clearNodes(); setBusy(true)
     addLog({type:'status', text:'Starting pipeline…'})
+
+    let activeId = projectId
+    if (!activeId) {
+      addLog({type:'status', text:'📁 Creating new project record…'})
+      try {
+        const res = await axios.post('/api/projects', { topic, channel_template: channelTemplate })
+        activeId = res.data.id
+        setProjectId(activeId)
+      } catch (e) {
+        addLog({type:'error', text:'❌ Failed to create project record.'})
+        setBusy(false); return
+      }
+    }
+
     await readSSE('/api/generate', {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ topic, project_id: projectId, tts_voice: ttsVoice || null, word_by_word: wordByWord, llm_provider: llmProvider }),
+      body: JSON.stringify({ 
+        topic, 
+        project_id: activeId, 
+        tts_voice: ttsVoice || null, 
+        word_by_word: wordByWord, 
+        llm_provider: llmProvider, 
+        channel_template: channelTemplate 
+      }),
     }, (e) => {
+      const activeNodes = TEMPLATES[channelTemplate] || []
       if (e.type === 'status') addLog({type:'status', text: e.data})
-      else if (NODES.find(n => n.key === e.type)) { setNode(e.type, e.data); addLog({type:'content', text:`✓ ${e.type}`}) }
+      else if (activeNodes.find(n => n.key === e.type)) { setNode(e.type, e.data); addLog({type:'content', text:`✓ ${e.type}`}) }
       else if (e.type === 'complete') { setOutputData(e.data); setPhase(2); addLog({type:'success', text:'✅ Script & audio complete!'}) }
       else if (e.type === 'error')    addLog({type:'error', text:`❌ ${e.data}`})
     })
@@ -62,11 +91,20 @@ function Phase1({ projectId }) {
   return (
     <div>
       <div className="card">
-        <div className="input-group">
-          <label>Topic</label>
-          <input type="text" value={topic} onChange={e => setTopic(e.target.value)}
-            placeholder="e.g. The commodification of attention"
-            onKeyDown={e => e.key==='Enter' && !busy && topic.trim() && generate()} />
+        <div className="row">
+          <div className="input-group" style={{flex:2}}>
+            <label>Topic</label>
+            <input type="text" value={topic} onChange={e => setTopic(e.target.value)}
+              placeholder="e.g. The commodification of attention"
+              onKeyDown={e => e.key==='Enter' && !busy && topic.trim() && generate()} />
+          </div>
+          <div className="input-group" style={{flex:1}}>
+            <label>Channel Template</label>
+            <select value={channelTemplate} onChange={e => setChannelTemplate(e.target.value)}>
+              <option value="still_point">⚖️ Still Point (Dialectic)</option>
+              <option value="zerourgency">📺 ZeroUrgency (Infotainment)</option>
+            </select>
+          </div>
         </div>
         <div className="row">
           <div className="input-group">
@@ -110,7 +148,7 @@ function Phase1({ projectId }) {
 
       {hasNodes && (
         <div className="node-grid">
-          {NODES.map(n => nodes[n.key] ? (
+          {(TEMPLATES[channelTemplate] || []).map(n => nodes[n.key] ? (
             <div key={n.key} className="node-card">
               <div className="node-label">{n.label}</div>
               <div className="node-text">{nodes[n.key]}</div>
@@ -198,10 +236,10 @@ function PexelsPicker({ section, initialQuery, folderPath, onSelect, onClose }) 
 
 /* ══ PHASE 2 ══════════════════════════════════════════════════ */
 function Phase2({ projectId }) {
-  const { outputData, subtitleMode, setSubtitleMode, setPhase } = usePipeline()
+  const { outputData, subtitleMode, setSubtitleMode, setPhase, channelTemplate } = usePipeline()
 
   const mkBg = () => ({ file: null, path: null, preview: null, credit: null })
-  const [bgs,        setBgs]        = useState({ thesis: mkBg(), antithesis: mkBg(), synthesis: mkBg() })
+  const [bgs,        setBgs]        = useState({})
   const [log,        setLog]        = useState([])
   const [prog,       setProg]       = useState(0)
   const [vpath,      setVpath]      = useState(null)
@@ -240,7 +278,10 @@ function Phase2({ projectId }) {
     addLog({ type:'status', text:'🔍 LLM extracting visual keywords → searching Pexels…' })
     try {
       const r = await axios.post('/api/pexels/auto', {
-        topic: outputData.topic, sections, folder_path: outputData.folder_path,
+        topic: outputData.topic, 
+        sections, 
+        folder_path: outputData.folder_path,
+        channel_template: channelTemplate
       })
       setPexQueries(r.data.queries || {})
       const paths = r.data.paths || {}
@@ -267,6 +308,7 @@ function Phase2({ projectId }) {
         sections,
         folder_path:         outputData.folder_path,
         sentences_per_chunk: 4,
+        channel_template:    channelTemplate
       })
       setTimelines(r.data.timelines)
       const total = Object.values(r.data.timelines).reduce((s, arr) => s + arr.length, 0)
@@ -328,9 +370,12 @@ function Phase2({ projectId }) {
       <details className="card" style={{marginBottom:14}}>
         <summary style={{cursor:'pointer', fontWeight:600, color:'var(--text-muted)'}}>📄 Full Script</summary>
         <div style={{marginTop:12, display:'flex', flexDirection:'column', gap:12}}>
-          {NODES.map(n => sections[n.key] ? (
-            <div key={n.key}><div className="node-label">{n.label}</div><div className="node-text" style={{fontSize:13}}>{sections[n.key]}</div></div>
-          ) : null)}
+          {Object.entries(sections).map(([key, text]) => {
+            const lbl = Object.values(TEMPLATES).flat().find(n => n.key === key)?.label || key
+            return (
+              <div key={key}><div className="node-label">{lbl}</div><div className="node-text" style={{fontSize:13}}>{text}</div></div>
+            )
+          })}
         </div>
       </details>
 
@@ -371,8 +416,10 @@ function Phase2({ projectId }) {
             </button>}
           </div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(220px,1fr))',gap:12,marginBottom:16}}>
-            {[['thesis','📖 Thesis'],['antithesis','⚡ Antithesis'],['synthesis','⚖️ Synthesis']].map(([k, lbl]) => {
-              const bg = bgs[k]; const hasBg = bg.preview || bg.path
+            {Object.keys(sections).filter(k => k !== 'hook' && !k.startsWith('bridge')).map(k => {
+              const bg = bgs[k] || mkBg()
+              const hasBg = bg.preview || bg.path
+              const lbl = Object.values(TEMPLATES).flat().find(n => n.key === k)?.label || k
               return (
                 <div key={k} style={{background:'var(--bg-elevated)',borderRadius:8,overflow:'hidden',border:'1px solid var(--border)'}}>
                   <div style={{position:'relative',height:120,background:'#111',display:'flex',alignItems:'center',justifyContent:'center'}}>
@@ -479,7 +526,7 @@ function Phase2({ projectId }) {
 
 /* ══ PHASE 3 ══════════════════════════════════════════════════ */
 function Phase3({ projectId }) {
-  const { outputData, ytMeta, setYtMeta, ytResult, setYtResult } = usePipeline()
+  const { outputData, ytMeta, setYtMeta, ytResult, setYtResult, channelTemplate } = usePipeline()
   const [busy,       setBusy]       = useState(false)
   const [rBusy,      setRBusy]      = useState(false)
   const [log,        setLog]        = useState([])
@@ -489,6 +536,7 @@ function Phase3({ projectId }) {
   const [hdd,        setHdd]        = useState('')
   const [showBrowse, setShowBrowse] = useState(false)
   const [meta,       setMeta]       = useState(null)
+  const [channel,    setChannel]    = useState(channelTemplate || 'still_point')
   const logRef = useRef(null)
 
   useEffect(() => { if (ytMeta) setMeta({...ytMeta}) }, [ytMeta])
@@ -518,6 +566,7 @@ function Phase3({ projectId }) {
     fd.append('playlist_id', meta.playlist_id || '')
     fd.append('hdd_path',    hdd)
     fd.append('project_id',  String(projectId || ''))
+    fd.append('channel_name', channel)
     if (thumb) fd.append('thumbnail', thumb)
 
     await readSSE('/api/yt/upload', {method:'POST', body:fd}, (e) => {
@@ -576,8 +625,15 @@ function Phase3({ projectId }) {
             <input type="text" value={(meta.tags||[]).join(', ')} onChange={e => setMeta(m => ({...m, tags:e.target.value.split(',').map(t=>t.trim())}))}/>
           </div>
           <div className="row" style={{marginBottom:14}}>
-            <div className="alert alert-info" style={{margin:0}}>🏷️ {meta.category_name} ({meta.category_id})</div>
-            <div className="alert alert-info" style={{margin:0}}>🇬🇧 English (en)</div>
+            <div className="input-group" style={{margin:0, flex:1}}>
+              <label>Target Channel</label>
+              <select value={channel} onChange={e => setChannel(e.target.value)}>
+                <option value="still_point">⚖️ Still Point</option>
+                <option value="zerourgency">📺 ZeroUrgency</option>
+              </select>
+            </div>
+            <div className="alert alert-info" style={{margin:0, flex:1, display:'flex', alignItems:'center', justifyContent:'center'}}>🏷️ {meta.category_name} ({meta.category_id})</div>
+            <div className="alert alert-info" style={{margin:0, flex:1, display:'flex', alignItems:'center', justifyContent:'center'}}>🇬🇧 English (en)</div>
           </div>
           <div className="row">
             <div className="input-group"><label>Privacy</label>

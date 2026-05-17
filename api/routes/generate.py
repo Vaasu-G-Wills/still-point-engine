@@ -13,11 +13,12 @@ router = APIRouter()
 
 
 class GenerateRequest(BaseModel):
-    topic:        str
-    project_id:   Optional[int] = None
-    tts_voice:    Optional[str] = None
-    word_by_word: bool = True
-    llm_provider: str  = "local"   # "local" | "gemini"
+    topic:            str
+    project_id:       Optional[int] = None
+    tts_voice:        Optional[str] = None
+    word_by_word:     bool = True
+    llm_provider:     str  = "local"   # "local" | "gemini"
+    channel_template: str  = "still_point"
 
 
 @router.post("/generate")
@@ -36,6 +37,7 @@ async def generate_script(req: GenerateRequest):
                 yield_callback=yield_callback,
                 tts_voice=req.tts_voice,
                 llm_provider=req.llm_provider,
+                script_format=req.channel_template,
                 render_video=False,
             )
             output["word_by_word"] = req.word_by_word

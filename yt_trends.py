@@ -66,13 +66,13 @@ def fetch_trending_titles(youtube, region_code: str = "IN") -> list[dict]:
     return all_videos
 
 
-def get_trending_raw(region_code: str = "IN") -> list[dict]:
+def get_trending_raw(region_code: str = "IN", channel: str = "still_point") -> list[dict]:
     """
     Authenticates and fetches trending data.
     Falls back through region codes if one fails.
     """
     from yt_uploader import get_authenticated_service
-    youtube = get_authenticated_service()
+    youtube = get_authenticated_service(channel=channel)
 
     videos = fetch_trending_titles(youtube, region_code)
 
@@ -90,11 +90,11 @@ def get_trending_raw(region_code: str = "IN") -> list[dict]:
 
 # ─── LLM Topic Extractor ──────────────────────────────────────────────────────
 
-def extract_dialectic_topics(trending_videos: list[dict], n_suggestions: int = 8) -> list[dict]:
+def extract_dialectic_topics(trending_videos: list[dict], n_suggestions: int = 8, channel_template: str = "still_point") -> list[dict]:
     """
     Feeds the trending video titles to the local LLM and extracts
-    N philosophical debate topics. Uses a simple pipe-delimited format
-    to avoid complex parsing failures.
+    N topics based on the selected channel template.
+    Uses a simple pipe-delimited format to avoid complex parsing failures.
     """
     if not trending_videos:
         return []
@@ -104,7 +104,25 @@ def extract_dialectic_topics(trending_videos: list[dict], n_suggestions: int = 8
         for v in trending_videos[:40]
     ])
 
-    prompt = f"""You are a philosophical content strategist. Below are currently trending YouTube video titles.
+    if channel_template == "zerourgency":
+        prompt = f"""You are a brilliant YouTube content strategist. Below are currently trending YouTube video titles.
+
+TRENDING:
+{titles_block}
+
+Extract {n_suggestions} fascinating infotainment topics grounded in these trends.
+Each topic must be a captivating deep-dive subject, a strange history, or a surprising mechanism (like Vox or Johnny Harris).
+
+Output each topic on its own line using EXACTLY this format (pipe-separated, no extra text):
+TOPIC | RATIONALE | CATEGORY
+
+Example:
+The hidden economics of concert ticket pricing | Music tour trends reveal monopolistic practices | Entertainment
+Why modern buildings are all starting to look exactly the same | Viral architecture videos show a loss of character | Education
+
+Now output {n_suggestions} lines in that exact format. Nothing else before or after."""
+    else:
+        prompt = f"""You are a philosophical content strategist. Below are currently trending YouTube video titles.
 
 TRENDING:
 {titles_block}
@@ -179,12 +197,13 @@ Now output {n_suggestions} lines in that exact format. Nothing else before or af
 def get_trending_topic_suggestions(
     region_code: str = "IN",
     n_suggestions: int = 8,
+    channel_template: str = "still_point",
 ) -> dict:
     """
-    Full pipeline: fetch YouTube trending → extract philosophical topics.
+    Full pipeline: fetch YouTube trending → extract topics.
     Returns {topics: [...], region: str, raw_video_count: int}
     """
-    raw_videos = get_trending_raw(region_code)
+    raw_videos = get_trending_raw(region_code, channel=channel_template)
 
     if not raw_videos:
         return {
@@ -194,7 +213,7 @@ def get_trending_topic_suggestions(
             "error":           "No trending data returned. Check API credentials or region code.",
         }
 
-    topics = extract_dialectic_topics(raw_videos, n_suggestions=n_suggestions)
+    topics = extract_dialectic_topics(raw_videos, n_suggestions=n_suggestions, channel_template=channel_template)
 
     return {
         "topics":          topics,

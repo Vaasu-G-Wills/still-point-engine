@@ -11,6 +11,7 @@ from moviepy.editor import (
     AudioFileClip, ImageClip, VideoFileClip,
     concatenate_videoclips, concatenate_audioclips, CompositeAudioClip,
 )
+from imageio_ffmpeg import get_ffmpeg_exe
 
 class RenderCancelledException(Exception):
     pass
@@ -18,10 +19,12 @@ class RenderCancelledException(Exception):
 # ─── Configuration ────────────────────────────────────────────────────────────
 # 720p instead of 1080p — cuts per-frame RAM from ~6MB to ~2.8MB (56% reduction)
 VIDEO_SIZE   = (1280, 720)
-FONT_SIZE    = 55
+FONT_SIZE    = 44
 MAX_CHARS    = 48      # wrap width
 SUBTITLE_Y   = 0.76   # lower-third anchor (fraction of height)
 FONT_PATH    = "Roboto-Regular.ttf"
+SAFE_WIDTH   = int(VIDEO_SIZE[0] * 0.88)  # 88% safe window
+AUDIO_SR     = 44100                      # Global master sampling rate
 
 # Ken Burns zoom
 ZOOM_START     = 1.0
@@ -50,6 +53,9 @@ SECTION_TINTS = {
     "antithesis": (140, 180, 240,  22),   # steel blue
     "bridge_bc":  (190, 170, 235,  12),   # transitional violet
     "synthesis":  (170, 155, 235,  20),   # soft violet
+    "context":    (200, 230, 200,  18),   # cool green
+    "deep_dive":  (255, 180, 180,  22),   # intense warm red
+    "takeaway":   (180, 220, 255,  20),   # calm bright blue
 }
 
 # Ken Burns direction cycle (auto-assigned per image in contextual timeline)
@@ -519,26 +525,84 @@ def draw_subtitle_on_frame(base_img, text, font, highlight_word=None,
     img = base_img.copy()
     W, H = img.size
 
-    # --- WORD MODE ---
+    # --- WORD MODE (PREMIUM HIGHLIGHT) ---
     if subtitle_mode == "word" and highlight_word:
-        draw = ImageDraw.Draw(img)
-        # Load a massive font dynamically or just scale up (Pillow font scaling isn't great,
-        # but we can try to use a larger font size. Since we don't have the font path,
-        # we'll use the provided font, but the user expects a massive font.
-        # It's better to load the font. We have `load_font(120)` available.
-        big_font = load_font(120)
+        draw = ImageDraw.Draw(img, "RGBA")
         
-        word = highlight_word.strip(".,!?;:'\"")
-        bb = draw.textbbox((0, 0), word, font=big_font)
-        bw = bb[2] - bb[0]
-        bh = bb[3] - bb[1]
+        # Load fonts
+        main_font = font # Normal size for full sentence
+        active_font = load_font(int(font.size * 1.15)) # Slightly larger for active word
         
-        x = (W - bw) / 2
-        y = (H - bh) / 2
+        # Wrap the full sentence context
+        wrapped  = "\n".join(textwrap.wrap(text, width=MAX_CHARS))
+        lines    = wrapped.split("\n")
         
-        # Heavy drop shadow
-        draw.text((x + 6, y - bb[1] + 6), word, font=big_font, fill=(0, 0, 0, 200))
-        draw.text((x, y - bb[1]), word, font=big_font, fill=(255, 255, 255))
+        line_bboxes   = [draw.textbbox((0, 0), line, font=main_font) for line in lines]
+        line_heights  = [bb[3] - bb[1] for bb in line_bboxes]
+        line_widths   = [bb[2] - bb[0] for bb in line_bboxes]
+        line_spacing  = 12
+        block_h       = sum(line_heights) + line_spacing * (len(lines) - 1)
+        block_w       = max(line_widths) if line_widths else 0
+
+        anchor_y = int(H * SUBTITLE_Y) + y_offset
+        
+        # Draw pill background
+        pad_x, pad_y = 30, 16
+        pill = [(W-block_w)//2 - pad_x, anchor_y - pad_y, (W+block_w)//2 + pad_x, anchor_y + block_h + pad_y]
+        overlay = Image.new("RGBA", img.size, (0,0,0,0))
+        ov_draw = ImageDraw.Draw(overlay)
+        ov_draw.rounded_rectangle(pill, radius=16, fill=(0,0,0,140))
+        img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+        draw = ImageDraw.Draw(img, "RGBA")
+
+        # --- PIXEL-BASED WRAPPING (The "Safe Window" Fix) ---
+        words = text.split()
+        lines = []
+        current_line = []
+        for w in words:
+            test_line = " ".join(current_line + [w])
+            w_bb = draw.textbbox((0, 0), test_line, font=main_font)
+            if (w_bb[2] - w_bb[0]) <= SAFE_WIDTH:
+                current_line.append(w)
+            else:
+                lines.append(" ".join(current_line))
+                current_line = [w]
+        if current_line:
+            lines.append(" ".join(current_line))
+
+        y_cursor = anchor_y
+        global_w = 0
+        for i, line in enumerate(lines):
+            # Recalculate width for centering
+            l_bb = draw.textbbox((0, 0), line, font=main_font)
+            lw = l_bb[2] - l_bb[0]
+            lh = l_bb[3] - l_bb[1]
+            x_cursor = (W - lw) / 2
+            ascender_off = l_bb[1]
+            
+            for w in line.split():
+                is_active = (global_w == highlight_word_idx)
+                f = active_font if is_active else main_font
+                
+                # Active word gets a glow and bright color
+                col = (255, 235, 60, 255) if is_active else (255, 255, 255, 160) # Muted white for inactive
+                
+                # Calculate bounds for current word
+                w_bb = draw.textbbox((0, 0), w + " ", font=f)
+                ww = w_bb[2] - w_bb[0]
+                
+                if is_active:
+                    # Glow/Outer Shadow for active word
+                    for off in [1, 2]:
+                        draw.text((x_cursor+off, y_cursor-ascender_off+off), w + " ", font=f, fill=(0,0,0,100))
+                    draw.text((x_cursor, y_cursor-ascender_off), w + " ", font=f, fill=(255, 255, 255, 255))
+                    draw.text((x_cursor, y_cursor-ascender_off), w + " ", font=f, fill=col)
+                else:
+                    draw.text((x_cursor, y_cursor-ascender_off), w + " ", font=f, fill=col)
+                
+                x_cursor += ww
+                global_w += 1
+            y_cursor += line_heights[i] + line_spacing
         return np.array(img)
 
     # --- CHUNK & SENTENCE MODE ---
@@ -615,6 +679,9 @@ _MUSIC_MAP = {
     "antithesis": ["tense"],
     "bridge_bc":  ["tense", "resolved"],
     "synthesis":  ["resolved", "contemplative"],
+    "context":    ["contemplative"],
+    "deep_dive":  ["tense", "contemplative"],
+    "takeaway":   ["resolved", "contemplative"],
 }
 _AUDIO_EXTS = ["mp3", "wav", "ogg", "m4a", "flac"]
 
@@ -714,14 +781,19 @@ def render_node_to_tempfile(
             pass  # silently degrade to syllable fallback
 
         if forced_timestamps:
-            # Build segments directly from exact word timings.
-            # segment tuple: (context_text, highlight_word, word_idx, t_start, t_end)
-            for idx, entry in enumerate(forced_timestamps):
-                word = entry.get("word", "")
-                t0   = float(entry.get("start", elapsed))
-                t1   = float(entry.get("end",   elapsed + 0.08))
-                segments.append((word, word, idx, t0, t1))
-            print(f"[video_engine] Forced alignment loaded: {len(segments)} words from {node_name}")
+            # Map timestamped words back to sentences for visual context
+            word_ptr = 0
+            for sent in sentences:
+                sent_words = sent.split()
+                for i, s_word in enumerate(sent_words):
+                    if word_ptr < len(forced_timestamps):
+                        entry = forced_timestamps[word_ptr]
+                        # 0.03s lead-in for more natural human response time
+                        t0 = max(0, float(entry.get("start", 0)) - 0.03)
+                        t1 = float(entry.get("end", 0))
+                        segments.append((sent, s_word, i, t0, t1))
+                        word_ptr += 1
+            print(f"[video_engine] Robust Whisper-aligned segments built: {len(segments)} words from {node_name}")
 
     # ── CHUNK / SENTENCE / WORD-fallback (syllable estimation) ───────
     if not segments and word_by_word:
@@ -821,45 +893,19 @@ def render_node_to_tempfile(
         if SHOW_PROGRESS_BAR:
             zoomed = draw_progress_bar(zoomed, t, total_duration, node_idx, total_nodes, node_name)
 
-        # ─ 6. Subtitle / Quote callout ───────────────────────────────
-        text, highlight, word_idx = "", None, -1
-        seg_start = 0.0
-        for seg_text, seg_hi, seg_idx, t0, t1 in segments:
-            if t0 <= t < t1:
-                text, highlight, word_idx = seg_text, seg_hi, seg_idx
-                # Use SENTENCE start for animation anchor, not word start
-                # This prevents flicker — slide-up fires once per sentence
-                seg_start = sentence_bounds.get(seg_text, [t0, t1])[0]
-                break
-        if not text and segments:
-            text, highlight, word_idx = segments[-1][0], segments[-1][1], segments[-1][2]
-            seg_start = sentence_bounds.get(text, [segments[-1][3], segments[-1][4]])[0]
-
-        # Normal subtitle: slide-up + fade-in anchored to sentence start
-        time_in_seg = t - seg_start
-        if text and time_in_seg < SLIDE_SECS:
-            progress  = time_in_seg / SLIDE_SECS
-            y_off     = int(SLIDE_DIST_PX * (1.0 - progress))
-            subtitled = draw_subtitle_on_frame(
-                Image.fromarray(zoomed), text, font,
-                highlight_word=highlight, highlight_word_idx=word_idx, y_offset=y_off,
-                subtitle_mode=subtitle_mode
-            )
-            subtitled = (
-                zoomed.astype(np.float32) * (1.0 - progress)
-                + subtitled.astype(np.float32) * progress
-            ).astype(np.uint8)
-        else:
-            subtitled = draw_subtitle_on_frame(
-                Image.fromarray(zoomed), text, font,
-                highlight_word=highlight, highlight_word_idx=word_idx, y_offset=0,
-                subtitle_mode=subtitle_mode
-            )
-        return subtitled
+        return zoomed
 
     tmp_path = os.path.join(tmp_dir or tempfile.gettempdir(), f"node_{os.urandom(4).hex()}.mp4")
     node_vid = VideoClip(make_frame, duration=total_duration).set_audio(mixed_audio)
-    node_vid.write_videofile(tmp_path, fps=24, codec="libx264", audio_codec="aac", logger=None)
+    node_vid.write_videofile(
+        tmp_path, 
+        fps=24, 
+        codec="libx264", 
+        audio_codec="aac", 
+        audio_fps=AUDIO_SR,
+        logger=None,
+        ffmpeg_params=["-vsync", "cfr"]
+    )
 
     node_vid.close()
     audio_clip.close()
@@ -875,6 +921,29 @@ def render_node_to_tempfile(
     return tmp_path
 
 # ─── Master Video Builder ─────────────────────────────────────────────────────
+
+def render_card_to_tempfile(card_clip, duration, tmp_dir):
+    """
+    Renders an ImageClip card to a temporary .mp4 with a silent audio track
+    so it matches nodes' codec/audio properties for FFMPEG copy concatenation.
+    """
+    from moviepy.editor import AudioClip
+    silent_audio = AudioClip(lambda t: 0.0, duration=duration, fps=AUDIO_SR)
+    card_clip = card_clip.set_audio(silent_audio)
+    
+    tmp_path = os.path.join(tmp_dir, f"card_{os.urandom(4).hex()}.mp4")
+    card_clip.write_videofile(
+        tmp_path,
+        fps=24,
+        codec="libx264",
+        audio_codec="aac",
+        audio_fps=AUDIO_SR,
+        logger=None,
+        ffmpeg_params=["-vsync", "cfr"]
+    )
+    card_clip.close()
+    silent_audio.close()
+    return tmp_path
 
 def build_master_video(
     topic_dir,
@@ -933,6 +1002,9 @@ def build_master_video(
         ("antithesis", sections.get("antithesis", "")),
         ("bridge_bc",  sections.get("bridge_bc", "")),
         ("synthesis",  sections.get("synthesis", "")),
+        ("context",    sections.get("context", "")),
+        ("deep_dive",  sections.get("deep_dive", "")),
+        ("takeaway",   sections.get("takeaway", "")),
     ]
     nodes_to_render = [
         (n, t) for n, t in nodes
@@ -940,14 +1012,18 @@ def build_master_video(
     ]
     total = len(nodes_to_render)
 
-    all_clips  = []   # final sequence including title cards
     temp_files = []
+    elapsed_time = 0.0
+    master_word_timestamps = []
 
     # ── Intro title card ─────────────────────────────────────────────
     if SHOW_INTRO_CARD and topic:
         if progress_callback:
             progress_callback(0, total, "🎞️ Rendering intro card…")
-        all_clips.append(make_intro_clip(topic, INTRO_CARD_SECS))
+        intro_clip = make_intro_clip(topic, INTRO_CARD_SECS)
+        intro_path = render_card_to_tempfile(intro_clip, INTRO_CARD_SECS, tmp_dir)
+        temp_files.append(intro_path)
+        elapsed_time += INTRO_CARD_SECS
 
     # ── Node render loop ─────────────────────────────────────────────
     for idx, (node_name, text) in enumerate(nodes_to_render):
@@ -959,7 +1035,10 @@ def build_master_video(
         if SHOW_TITLE_CARDS and node_name in section_titles:
             title = section_titles[node_name]
             print(f"[video_engine] Title card: \"{title}\"")
-            all_clips.append(make_title_card_clip(title, TITLE_CARD_SECS))
+            title_clip = make_title_card_clip(title, TITLE_CARD_SECS)
+            title_path = render_card_to_tempfile(title_clip, TITLE_CARD_SECS, tmp_dir)
+            temp_files.append(title_path)
+            elapsed_time += TITLE_CARD_SECS
 
         label = node_name.replace("_", " → ").capitalize()
         if progress_callback:
@@ -983,33 +1062,110 @@ def build_master_video(
         )
         if tmp_path:
             temp_files.append(tmp_path)
-            all_clips.append(VideoFileClip(tmp_path))
+            
+            # Read clip duration using VideoFileClip to adjust total elapsed_time
+            node_vid = VideoFileClip(tmp_path)
+            node_duration = node_vid.duration
+            node_vid.close()
+            
+            # Map timestamps from aligner.py into our cumulative master timestamps
+            from aligner import load_timestamps
+            node_ts = load_timestamps(audio_path)
+            for ts in node_ts:
+                master_word_timestamps.append({
+                    "word": ts["word"],
+                    "start": ts["start"] + elapsed_time,
+                    "end": ts["end"] + elapsed_time
+                })
+            
+            elapsed_time += node_duration
         gc.collect()
 
     # ── Outro CTA ────────────────────────────────────────────────────
     if SHOW_OUTRO_CARD:
         if progress_callback:
             progress_callback(total, total, "🎬 Rendering outro card…")
-        all_clips.append(make_outro_clip(next_topic, OUTRO_CARD_SECS))
+        outro_clip = make_outro_clip(next_topic, OUTRO_CARD_SECS)
+        outro_path = render_card_to_tempfile(outro_clip, OUTRO_CARD_SECS, tmp_dir)
+        temp_files.append(outro_path)
+        elapsed_time += OUTRO_CARD_SECS
 
     if progress_callback:
         progress_callback(total, total, "🔗 Stitching everything together…")
 
-    if not all_clips:
+    if not temp_files:
         raise ValueError("No renderable segments found.")
 
-    # ── Concatenate ───────────────────────────────────────────────────
+    # ── FFMPEG Stream-Copy Concatenation (Zero Drift) ──────────────────
+    clean_master_path = os.path.join(tmp_dir, "clean_master.mp4")
+    print(f"[video_engine] FFMPEG Concat Demuxer: stitching {len(temp_files)} segments…")
+    
+    # Create the concat instruction file
+    concat_list_path = os.path.join(tmp_dir, "concat_list.txt")
+    with open(concat_list_path, "w") as f:
+        for tmp in temp_files:
+            f.write(f"file '{os.path.abspath(tmp)}'\n")
+
+    # Run FFMPEG concat demuxer to produce clean master video (no subtitles yet)
+    import subprocess
+    ffmpeg_bin = get_ffmpeg_exe()
+    cmd = [
+        ffmpeg_bin, "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", concat_list_path,
+        "-c", "copy",
+        clean_master_path
+    ]
+    
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+        print(f"[video_engine] Clean master video built successfully: {clean_master_path}")
+    except subprocess.CalledProcessError as e:
+        print(f"[video_engine] FFMPEG Concat failed: {e.stderr.decode()}")
+        # Fallback using MoviePy compose if somehow ffmpeg copy failed
+        master = concatenate_videoclips([VideoFileClip(f) for f in temp_files], method="compose")
+        master.write_videofile(clean_master_path, fps=24, codec="libx264", audio_codec="aac", audio_fps=AUDIO_SR, logger=None)
+        master.close()
+
+    # ── Generate and Burn Subtitles (.ass) ──────────────────────────
     output_path = os.path.join(topic_dir, "master_video.mp4")
-    print(f"[video_engine] Concatenating {len(all_clips)} clips (nodes + cards)…")
-    master = concatenate_videoclips(all_clips, method="compose")
-    master.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", logger=None)
+    if master_word_timestamps:
+        if progress_callback:
+            progress_callback(total, total, "✍️ Burning in .ass subtitles…")
+            
+        ass_path = os.path.join(tmp_dir, "master_subs.ass")
+        from ass_generator import generate_ass
+        generate_ass(master_word_timestamps, ass_path, video_width=VIDEO_SIZE[0], video_height=VIDEO_SIZE[1])
+        
+        # Burn subtitle file using libass (FFmpeg video filter)
+        # -c:a copy allows stream copying the audio directly (super fast, no drift!)
+        burn_cmd = [
+            ffmpeg_bin, "-y",
+            "-i", clean_master_path,
+            "-vf", f"ass={ass_path}",
+            "-c:v", "libx264",
+            "-crf", "18",
+            "-preset", "veryfast",
+            "-c:a", "copy",
+            output_path
+        ]
+        try:
+            print(f"[video_engine] Running FFMPEG libass subtitle burn-in pass…")
+            subprocess.run(burn_cmd, check=True, capture_output=True)
+            print(f"[video_engine] Subtitles successfully burned into {output_path}")
+        except subprocess.CalledProcessError as e:
+            print(f"[video_engine] FFMPEG Subtitle burn failed: {e.stderr.decode()}")
+            # If libass fails, copy clean video as final output
+            import shutil
+            shutil.copy(clean_master_path, output_path)
+    else:
+        # No timestamps to generate subtitles, just copy the clean master
+        import shutil
+        shutil.copy(clean_master_path, output_path)
 
-    master.close()
-    for c in all_clips:
-        try: c.close()
-        except Exception: pass
+    # Cleanup
     gc.collect()
-
     import shutil
     shutil.rmtree(tmp_dir, ignore_errors=True)
 

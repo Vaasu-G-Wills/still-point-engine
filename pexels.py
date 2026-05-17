@@ -95,53 +95,85 @@ def search_videos(query: str, per_page: int = 6) -> list[dict]:
 
 # ── Download & Cache ──────────────────────────────────────────────────────────
 
-def download_photo(url: str, dest_dir: str = None) -> str:
+def download_photo(url: str, dest_dir: str = None, metadata: dict = None) -> str:
     """
     Downloads the photo at `url` into `dest_dir` (or CACHE_DIR).
     Returns the local file path. Uses a content-hash filename to deduplicate.
+    If metadata is provided, it tracks the asset in the global library.
     """
     dest_dir = dest_dir or CACHE_DIR
     os.makedirs(dest_dir, exist_ok=True)
 
     # Hash the URL to create a stable filename
-    fname = hashlib.md5(url.encode()).hexdigest() + ".jpg"
+    ext = ".mp4" if (metadata and metadata.get("media_type") == "video") else ".jpg"
+    fname = hashlib.md5(url.encode()).hexdigest() + ext
     fpath = os.path.join(dest_dir, fname)
 
-    if os.path.exists(fpath):
-        return fpath   # already cached
+    if not os.path.exists(fpath):
+        r = requests.get(url, timeout=20, stream=True)
+        r.raise_for_status()
+        with open(fpath, "wb") as f:
+            for chunk in r.iter_content(chunk_size=65536):
+                f.write(chunk)
+    
+    if metadata:
+        try:
+            from db import track_pexels_asset
+            track_pexels_asset(
+                pexels_id    = metadata.get("id"),
+                query        = metadata.get("query"),
+                local_path   = fpath,
+                preview_url  = metadata.get("preview_url"),
+                photographer = metadata.get("photographer"),
+                media_type   = metadata.get("media_type", "photo")
+            )
+        except Exception as e:
+            print(f"[pexels] Failed to track asset: {e}")
 
-    r = requests.get(url, timeout=20, stream=True)
-    r.raise_for_status()
-    with open(fpath, "wb") as f:
-        for chunk in r.iter_content(chunk_size=65536):
-            f.write(chunk)
     return fpath
 
 
 # ── LLM Keyword Extractor ─────────────────────────────────────────────────────
 
-def extract_search_query(section_name: str, section_text: str, topic: str) -> str:
+def extract_search_query(section_name: str, section_text: str, topic: str, channel_template: str = "still_point") -> str:
     """
-    Uses the local LLM to distil the section text into a 3–5 word
-    Pexels-optimised visual search query.
+    Uses an LLM to distil the section text into a 1-2 word Pexels-optimised
+    visual search query.
     """
-    prompt = f"""You are a visual search expert. Given a section of a philosophical video script,
-output a 1-2 word Pexels image search query that represents a tangible, physical metaphor for the theme.
+    import llm_client
+    from config import GEMINI_API_KEY
+    
+    is_zu = (channel_template == "zerourgency")
+    
+    if is_zu:
+        instruction = "output a 1-2 word Pexels image search query that is a DIRECT, LITERAL, and CONCRETE representation of the subject. Avoid metaphors; if the text mentions a phone, search for 'smartphone'. If it mentions a city, search for 'cityscape'."
+    else:
+        instruction = "output a 1-2 word Pexels image search query that represents a tangible, physical metaphor for the theme."
+
+    prompt = f"""You are a visual search expert. Given a section of a cinematic video script,
+{instruction}
 
 Topic: {topic}
 Section: {section_name}
-Text excerpt: {section_text[:400]}
+Text excerpt: {section_text[:1000]}
 
 Rules:
 - Output ONLY the 1-2 word search query, nothing else.
-- Use only tangible, highly visual, common photographic nouns (e.g., "hourglass", "handshake", "storm", "crowd", "mirror", "empty road").
-- Do NOT use abstract words (e.g., "transactional", "philosophy", "love", "society", "concept", "truth", "nature").
+- Use only tangible, highly visual, common photographic nouns.
+- The query MUST represent something physical that can be photographed.
 - No punctuation, no quotes.
 
 Search query:"""
 
-    res = ollama.generate(model=LLM_MODEL, prompt=prompt)
-    raw = res["response"].strip().strip('"\'').strip()
+    try:
+        # Prefer Gemini for faster/smarter query extraction if key exists
+        provider = "gemini" if GEMINI_API_KEY else "local"
+        raw = llm_client.generate(prompt, provider=provider)
+    except Exception as e:
+        print(f"[pexels] LLM extraction failed ({provider}): {e}. Falling back to local...")
+        raw = llm_client.generate(prompt, provider="local")
+        
+    raw = raw.strip().strip('"\'').strip()
     # Keep it clean — strip any leading labels the LLM might add
     raw = re.sub(r"(?i)^(search query|query)[:\s]+", "", raw).strip()
     return raw[:80]   # cap length
@@ -154,6 +186,7 @@ def auto_fetch_backgrounds(
     sections: dict,
     dest_dir: str,
     use_videos: bool = False,
+    channel_template: str = "still_point",
 ) -> dict:
     """
     For each of thesis / antithesis / synthesis:
@@ -180,7 +213,7 @@ def auto_fetch_backgrounds(
             continue
 
         try:
-            query = extract_search_query(section_name, text, topic)
+            query = extract_search_query(section_name, text, topic, channel_template=channel_template)
             queries[section_name] = query
             print(f"[pexels] {section_name}: searching '{query}'")
 
@@ -189,14 +222,21 @@ def auto_fetch_backgrounds(
                 if not videos:
                     continue
                 # Download just the poster frame for video BG (first frame image)
-                poster_url = videos[0]["preview_url"]
-                local = download_photo(poster_url, dest_dir=dest_dir)
+                best_vid = videos[0]
+                local = download_photo(best_vid["preview_url"], dest_dir=dest_dir, metadata={
+                    "id": best_vid["id"], "query": query, "preview_url": best_vid["preview_url"],
+                    "media_type": "video"
+                })
                 results[section_name] = local
             else:
                 photos = search_photos(query, per_page=5)
                 if not photos:
                     continue
-                local = download_photo(photos[0]["full_url"], dest_dir=dest_dir)
+                best_photo = photos[0]
+                local = download_photo(best_photo["full_url"], dest_dir=dest_dir, metadata={
+                    "id": best_photo["id"], "query": query, "preview_url": best_photo["preview_url"],
+                    "photographer": best_photo["photographer"], "media_type": "photo"
+                })
                 results[section_name] = local
 
         except Exception as e:
@@ -229,6 +269,7 @@ def build_contextual_timeline(
     topic:               str,
     dest_dir:            str,
     sentences_per_chunk: int = 4,
+    channel_template:    str = "still_point",
 ) -> list[dict]:
     """
     Builds a contextual image timeline for ONE script node.
@@ -248,13 +289,17 @@ def build_contextual_timeline(
 
     for i, chunk in enumerate(chunks):
         try:
-            query  = extract_search_query(f"{node_name} moment {i+1}", chunk, topic)
+            query  = extract_search_query(f"{node_name} moment {i+1}", chunk, topic, channel_template=channel_template)
             print(f"[pexels] {node_name}[{i+1}/{len(chunks)}]: '{query}'")
             photos = search_photos(query, per_page=3)
             if not photos:
                 photos = search_photos(f"{topic} cinematic", per_page=3)
             if photos:
-                path = download_photo(photos[0]["full_url"], dest_dir=dest_dir)
+                best_p = photos[0]
+                path = download_photo(best_p["full_url"], dest_dir=dest_dir, metadata={
+                    "id": best_p["id"], "query": query, "preview_url": best_p["preview_url"],
+                    "photographer": best_p["photographer"], "media_type": "photo"
+                })
                 timeline.append({
                     "query":      query,
                     "path":       path,
@@ -279,13 +324,14 @@ def build_full_contextual_script(
     dest_dir:            str,
     sentences_per_chunk: int       = 4,
     nodes:               list[str] = None,
+    channel_template:    str       = "still_point",
 ) -> dict:
     """
     Runs build_contextual_timeline for every node in the script.
     Returns { node_name: timeline_list, ... }
     """
     if nodes is None:
-        nodes = ["hook", "thesis", "bridge_ab", "antithesis", "bridge_bc", "synthesis"]
+        nodes = list(sections.keys())
 
     result = {}
     for node in nodes:
@@ -298,5 +344,6 @@ def build_full_contextual_script(
             topic                = topic,
             dest_dir             = dest_dir,
             sentences_per_chunk  = sentences_per_chunk,
+            channel_template     = channel_template,
         )
     return result

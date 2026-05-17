@@ -19,13 +19,14 @@ export default function Trends() {
   const [creating,  setCreating]  = useState(null)  // topic string being created
   const [error,     setError]     = useState(null)
   const [result,    setResult]    = useState(null)
-  const { loadProject } = usePipeline()
+  const { loadProject, setChannelTemplate } = usePipeline()
+  const [trendChannelTemplate, setTrendChannelTemplate] = useState('still_point')
   const navigate = useNavigate()
 
   const fetchTrends = async () => {
     setBusy(true); setError(null); setResult(null)
     try {
-      const r = await axios.post('/api/trends', {region_code: region, n_suggestions: nTopics})
+      const r = await axios.post('/api/trends', {region_code: region, n_suggestions: nTopics, channel_template: trendChannelTemplate})
       if (r.data.error) setError(r.data.error)
       else setResult(r.data)
     } catch(e) { setError(String(e)) }
@@ -36,8 +37,9 @@ export default function Trends() {
   const useTopic = async (topic) => {
     setCreating(topic)
     try {
-      const r = await axios.post('/api/projects', { topic })
+      const r = await axios.post('/api/projects', { topic, channel_template: trendChannelTemplate })
       loadProject(r.data)
+      setChannelTemplate(trendChannelTemplate)
       navigate(`/projects/${r.data.id}`)
     } catch(e) {
       setError(`Failed to create project: ${e}`)
@@ -49,7 +51,7 @@ export default function Trends() {
     <div>
       <div className="page-header">
         <h2>Trending Topics</h2>
-        <p>Today's YouTube trends → philosophical dialectic angles via local LLM</p>
+        <p>Today's YouTube trends → format-specific angles via local LLM</p>
       </div>
 
       <div className="card" style={{marginBottom:20}}>
@@ -58,6 +60,13 @@ export default function Trends() {
             <label>Region</label>
             <select value={region} onChange={e=>setRegion(e.target.value)}>
               {REGIONS.map(r=><option key={r.code} value={r.code}>{r.label}</option>)}
+            </select>
+          </div>
+          <div className="input-group" style={{flex:2,marginBottom:0}}>
+            <label>Channel Format</label>
+            <select value={trendChannelTemplate} onChange={e=>setTrendChannelTemplate(e.target.value)}>
+              <option value="still_point">⚖️ Still Point (Dialectic)</option>
+              <option value="zerourgency">📺 ZeroUrgency (Infotainment)</option>
             </select>
           </div>
           <div className="input-group" style={{flex:1,marginBottom:0}}>

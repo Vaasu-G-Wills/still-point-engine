@@ -24,15 +24,18 @@ const usePipeline = create((set) => ({
   subtitleMode: 'chunk',
   setSubtitleMode:(v) => set({ subtitleMode: v }),
 
+  channelTemplate: 'still_point',
+  setChannelTemplate:(v) => set({ channelTemplate: v }),
+
   // ── Generation log ───────────────────────────────────────────
   logLines:     [],
   addLog:       (line) => set((s) => ({ logLines: [...s.logLines, line] })),
   clearLog:     () => set({ logLines: [] }),
 
   // ── Streamed node text ───────────────────────────────────────
-  nodes: { hook:'', thesis:'', bridge_ab:'', antithesis:'', bridge_bc:'', synthesis:'' },
+  nodes: {},
   setNode:    (key, text) => set((s) => ({ nodes: { ...s.nodes, [key]: text } })),
-  clearNodes: () => set({ nodes: { hook:'', thesis:'', bridge_ab:'', antithesis:'', bridge_bc:'', synthesis:'' } }),
+  clearNodes: () => set({ nodes: {} }),
 
   // ── YT metadata ──────────────────────────────────────────────
   ytMeta:    null,
@@ -45,13 +48,14 @@ const usePipeline = create((set) => ({
   resetForNew: () => set({
     projectId: null, phase: 1, outputData: null,
     logLines: [], ytMeta: null, ytResult: null,
-    nodes: { hook:'', thesis:'', bridge_ab:'', antithesis:'', bridge_bc:'', synthesis:'' },
+    nodes: {},
   }),
 
   // ── Load existing project into store ─────────────────────────
   loadProject: (project) => set({
     projectId:  project.id,
     topic:      project.topic,
+    channelTemplate: project.channel_template || 'still_point',
     outputData: project.script_data
       ? { ...project.script_data, folder_path: project.folder_path }
       : null,
@@ -65,7 +69,7 @@ const usePipeline = create((set) => ({
       ? { url: project.yt_url, video_id: project.yt_video_id, privacy: 'public' }
       : null,
     logLines: [], ytMeta: null,
-    nodes: { hook:'', thesis:'', bridge_ab:'', antithesis:'', bridge_bc:'', synthesis:'' },
+    nodes: {},
   }),
 }))
 

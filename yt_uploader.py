@@ -35,12 +35,25 @@ YT_THUMBNAIL_MAX_BYTES   = 2 * 1024 * 1024  # 2MB
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 
-def get_authenticated_service(channel="channel_1"):
+def get_authenticated_service(channel="still_point"):
     """
     Returns an authenticated YouTube API service object.
     On first run, opens a local browser tab for Google OAuth consent.
     On subsequent runs, refreshes the saved token automatically.
     """
+    # ── Channel-specific secrets ──────────────────────────────────────
+    secret_file = f"client_secret_{channel}.json"
+    
+    # Handle specific user naming: client_secret_ZU.json or client_secret_zu.json
+    if channel == "zerourgency":
+        if os.path.exists("client_secret_ZU.json"):
+            secret_file = "client_secret_ZU.json"
+        elif os.path.exists("client_secret_zu.json"):
+            secret_file = "client_secret_zu.json"
+            
+    if not os.path.exists(secret_file):
+        secret_file = CLIENT_SECRET_FILE  # fallback to client_secret.json
+    
     creds = None
     token_file = f"token_{channel}.json"
 
@@ -66,7 +79,7 @@ def get_authenticated_service(channel="channel_1"):
                 if os.path.exists(TOKEN_FILE):
                     os.remove(TOKEN_FILE)
                 flow = InstalledAppFlow.from_client_secrets_file(
-                    CLIENT_SECRET_FILE, SCOPES
+                    secret_file, SCOPES
                 )
                 creds = flow.run_local_server(
                     port=0,
@@ -77,7 +90,7 @@ def get_authenticated_service(channel="channel_1"):
         else:
             # access_type='offline' is REQUIRED to get a refresh_token in testing mode
             flow = InstalledAppFlow.from_client_secrets_file(
-                CLIENT_SECRET_FILE, SCOPES
+                secret_file, SCOPES
             )
             creds = flow.run_local_server(
                 port=0,
@@ -140,9 +153,20 @@ def upload_video(
     Uploads a video to YouTube with the given metadata.
     Returns a dict with 'video_id' and 'url'.
     """
-    if not os.path.exists(CLIENT_SECRET_FILE):
+    # ── Channel-specific secrets ──────────────────────────────────────
+    secret_file = f"client_secret_{channel}.json"
+    if channel == "zerourgency":
+        if os.path.exists("client_secret_ZU.json"):
+            secret_file = "client_secret_ZU.json"
+        elif os.path.exists("client_secret_zu.json"):
+            secret_file = "client_secret_zu.json"
+            
+    if not os.path.exists(secret_file):
+        secret_file = CLIENT_SECRET_FILE
+
+    if not os.path.exists(secret_file):
         raise FileNotFoundError(
-            f"'{CLIENT_SECRET_FILE}' not found. "
+            f"Neither '{secret_file}' nor '{CLIENT_SECRET_FILE}' found. "
             "Download OAuth credentials from Google Cloud Console (Desktop App type)."
         )
 

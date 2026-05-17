@@ -39,14 +39,29 @@ def init_sqlite():
     # Projects table — one row per video project
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS projects (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            topic       TEXT NOT NULL,
-            folder_path TEXT NOT NULL,
-            phase       TEXT NOT NULL DEFAULT 'script_done',
-            yt_url      TEXT,
-            yt_video_id TEXT,
-            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            topic            TEXT NOT NULL,
+            folder_path      TEXT NOT NULL,
+            phase            TEXT NOT NULL DEFAULT 'script_done',
+            channel_template TEXT NOT NULL DEFAULT 'still_point',
+            yt_url           TEXT,
+            yt_video_id      TEXT,
+            created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    ''')
+    
+    # Visual Asset Library — tracks every Pexels image/video used
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS pexels_assets (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            pexels_id    INTEGER UNIQUE,
+            query        TEXT,
+            local_path   TEXT NOT NULL,
+            preview_url  TEXT,
+            photographer TEXT,
+            media_type   TEXT DEFAULT 'photo',
+            created_at   TEXT NOT NULL DEFAULT (datetime('now'))
         )
     ''')
 
@@ -171,13 +186,13 @@ def delete_script(script_id: int):
 
 # ─── Projects CRUD ────────────────────────────────────────────────────────────
 
-def create_project(topic: str, folder_path: str) -> dict:
+def create_project(topic: str, folder_path: str, channel_template: str = "still_point") -> dict:
     conn   = sqlite3.connect(SQLITE_DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT INTO projects (topic, folder_path, phase)
-        VALUES (?, ?, 'drafting')
-    ''', (topic, folder_path))
+        INSERT INTO projects (topic, folder_path, phase, channel_template)
+        VALUES (?, ?, 'drafting', ?)
+    ''', (topic, folder_path, channel_template))
     pid = cursor.lastrowid
     conn.commit()
     conn.close()
@@ -188,7 +203,7 @@ def get_all_projects() -> list[dict]:
     conn   = sqlite3.connect(SQLITE_DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT id, topic, folder_path, phase, yt_url, yt_video_id, created_at, updated_at
+        SELECT id, topic, folder_path, phase, channel_template, yt_url, yt_video_id, created_at, updated_at
         FROM projects ORDER BY updated_at DESC
     ''')
     rows = cursor.fetchall()
@@ -200,7 +215,7 @@ def get_project(project_id: int) -> dict | None:
     conn   = sqlite3.connect(SQLITE_DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT id, topic, folder_path, phase, yt_url, yt_video_id, created_at, updated_at
+        SELECT id, topic, folder_path, phase, channel_template, yt_url, yt_video_id, created_at, updated_at
         FROM projects WHERE id = ?
     ''', (project_id,))
     row = cursor.fetchone()
@@ -246,11 +261,12 @@ def _project_row(r) -> dict:
         "id":          r[0],
         "topic":       r[1],
         "folder_path": r[2],
-        "phase":       r[3],
-        "yt_url":      r[4],
-        "yt_video_id": r[5],
-        "created_at":  r[6],
-        "updated_at":  r[7],
+        "phase":            r[3],
+        "channel_template": r[4],
+        "yt_url":           r[5],
+        "yt_video_id":      r[6],
+        "created_at":       r[7],
+        "updated_at":       r[8],
         "has_video":   False,
         "video_path":  None,
         "script_data": None,
@@ -271,3 +287,28 @@ def _project_row(r) -> dict:
                     pass
                 break
     return project
+
+def track_pexels_asset(pexels_id, query, local_path, preview_url=None, photographer=None, media_type='photo'):
+    conn   = sqlite3.connect(SQLITE_DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            INSERT OR IGNORE INTO pexels_assets 
+            (pexels_id, query, local_path, preview_url, photographer, media_type)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (pexels_id, query, local_path, preview_url, photographer, media_type))
+        conn.commit()
+    except Exception as e:
+        print(f"[db] Error tracking asset: {e}")
+    conn.close()
+
+def get_pexels_library(limit=100):
+    conn   = sqlite3.connect(SQLITE_DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM pexels_assets ORDER BY created_at DESC LIMIT ?', (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [{
+        "id": r[0], "pexels_id": r[1], "query": r[2], "local_path": r[3],
+        "preview_url": r[4], "photographer": r[5], "media_type": r[6], "created_at": r[7]
+    } for r in rows]

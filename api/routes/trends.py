@@ -8,8 +8,9 @@ router = APIRouter()
 
 
 class TrendsRequest(BaseModel):
-    region_code:   str = "IN"
-    n_suggestions: int = 8
+    region_code:      str = "IN"
+    n_suggestions:    int = 8
+    channel_template: str = "still_point"
 
 
 @router.post("/trends")
@@ -18,4 +19,5 @@ def get_trends(req: TrendsRequest):
     return get_trending_topic_suggestions(
         region_code=req.region_code,
         n_suggestions=req.n_suggestions,
+        channel_template=req.channel_template,
     )

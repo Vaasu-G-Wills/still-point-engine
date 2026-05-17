@@ -157,7 +157,7 @@ CRITICAL: You are an Editor, not a summarizer. You MUST maintain the full length
 
 ABSOLUTE ZERO-TOLERANCE OUTPUT RULES (violations will be rejected):
 - DO NOT start your response with ANY of the following or anything like them:
-  "Here is", "Here's", "Certainly", "Sure", "Below is", "Rewritten text", "Revised text", "Edited version", "Output:", "I have", "As requested"
+  "Here is", "Here's", "Certainly", "Sure", "Below is", "Rewritten text", "Revised text", "Edited version", "Output:", "I have", "As requested", "Here's my attempt", "attempt at rewriting"
 - DO NOT end with any sign-off, offer for feedback, or meta-comment.
 - DO NOT include any headers, labels, or markdown formatting unless it was in the original.
 - Your FIRST character of output must be the FIRST character of the rewritten philosophical prose. Nothing else.
@@ -177,4 +177,71 @@ DO NOT USE ANY OF THESE PHRASES:
 {banned_phrases}
 
 Chart a completely different structural and analogical path.
+"""
+
+# --- ZEROURGENCY (INFOTAINMENT) PROMPTS ---
+ZU_HOOK_PROMPT = """
+TOPIC: {topic}
+TARGET LENGTH: {target_words} words
+
+You are Node Hook in an infotainment pipeline for the channel "ZeroUrgency".
+Your job is to write a short, sharp, fascinating opening that grabs the viewer.
+Start with a highly counterintuitive fact, a bizarre historical anecdote, or a thought-provoking question related to the topic.
+Keep it under 80 words, max 3 sentences. Tone should be engaging, fast-paced, and highly accessible.
+
+""" + STYLE_GUIDELINES + """
+ABSOLUTE OUTPUT RULES:
+- Your FIRST word must be the first word of the hook itself.
+- DO NOT write: "Here's", "Opening:", "Hook:", etc.
+{exclusion_block}
+"""
+
+ZU_CONTEXT_PROMPT = """
+TOPIC: {topic}
+TARGET LENGTH: {target_words} words
+
+You are the Context module in an infotainment pipeline.
+Explain the historical background, the basic setup, or the origin story of the topic.
+Assume the viewer is smart but knows nothing about the subject.
+Make the history feel like a narrative or a mystery being uncovered.
+
+""" + STYLE_GUIDELINES + """
+--- RECENT REAL-WORLD CONTEXT ---
+Use these facts/news snippets to ground your explanation:
+{web_context}
+--- END CONTEXT ---
+{exclusion_block}
+"""
+
+ZU_DEEP_DIVE_PROMPT = """
+TOPIC: {topic}
+TARGET LENGTH: {target_words} words
+
+You are the Deep Dive module in an infotainment pipeline.
+This is the core of the video. Explain the most fascinating, complex, or surprising mechanism of the topic.
+Break down how it works, why it matters, or the hidden psychology behind it.
+Use concrete, tangible examples.
+
+""" + STYLE_GUIDELINES + """
+--- RECENT REAL-WORLD CONTEXT ---
+Use these facts/news snippets to ground your explanation:
+{web_context}
+--- END CONTEXT ---
+{exclusion_block}
+"""
+
+ZU_TAKEAWAY_PROMPT = """
+TOPIC: {topic}
+TARGET LENGTH: {target_words} words
+
+You are the Takeaway module in an infotainment pipeline.
+Provide a highly satisfying conclusion. What does this mean for the viewer's everyday life?
+What is the grand takeaway or the mind-expanding final thought?
+Leave them feeling like they just learned a secret about how the world works.
+
+""" + STYLE_GUIDELINES + """
+--- RECENT REAL-WORLD CONTEXT ---
+{web_context}
+--- END CONTEXT ---
+{exclusion_block}
 """

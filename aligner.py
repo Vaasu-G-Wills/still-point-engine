@@ -1,164 +1,145 @@
 """
-aligner.py — Forced Alignment Engine
--------------------------------------
-Uses ctc-forced-aligner (MMS-300M) to produce exact word-level timestamps
-from a Kokoro-generated .wav file and its corresponding transcript.
+aligner.py — WhisperX Forced Alignment (SOTA)
+---------------------------------------------
+Replaces the bespoke torchaudio implementation with the industry standard whisperx.
+Performs Whisper transcription + Wav2Vec2 forced alignment.
+Mapped back to original script using SequenceMatcher.
 
-Output per audio file:
-  word_timestamps.json  →  [{word, start, end}, ...]   (seconds, float)
-
-Key design decisions:
-  - Strictly CPU-only: protects 4GB VRAM on the RTX 1650.
-  - Lazy-loads the MMS-300M model on first call (~300MB download, cached).
-  - Saves timestamps alongside the .wav so the video engine never re-aligns.
-  - Graceful fallback: any exception returns [] so callers can degrade safely.
-  - Kokoro outputs 24 kHz audio; MMS-300M requires 16 kHz — resampled here.
+Strictly CPU-only to avoid GPU OOM on RTX 1650.
 """
 
 import os
 import json
 import re
 import logging
+from difflib import SequenceMatcher
+
+# Universal FFmpeg injection: ensure whisperx / pyannote subprocesses find imageio_ffmpeg
+try:
+    import imageio_ffmpeg
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    ffmpeg_dir = os.path.dirname(ffmpeg_exe)
+    
+    # Symlink/copy platform-specific binary to a standard 'ffmpeg' filename
+    target_ffmpeg = os.path.join(ffmpeg_dir, "ffmpeg")
+    if not os.path.exists(target_ffmpeg):
+        try:
+            os.symlink(os.path.basename(ffmpeg_exe), target_ffmpeg)
+            print(f"[aligner] Created symlink for ffmpeg: {target_ffmpeg}")
+        except Exception as sym_e:
+            import shutil
+            shutil.copy(ffmpeg_exe, target_ffmpeg)
+            print(f"[aligner] Copied ffmpeg binary to standard filename: {target_ffmpeg}")
+            
+    os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+    print(f"[aligner] Injected imageio_ffmpeg path into PATH: {ffmpeg_dir}")
+except Exception as path_e:
+    print(f"[aligner] Failed to inject imageio_ffmpeg path: {path_e}")
+
+import whisperx
 
 logger = logging.getLogger(__name__)
 
-# ─── Module-level lazy state ──────────────────────────────────────────────────
-_alignment_model     = None
-_alignment_tokenizer = None
+# --- Lazy-loaded Models ---
+_whisperx_model = None
+_align_model = None
+_align_metadata = None
 
-TARGET_SR = 16_000   # MMS-300M requirement
+def _get_whisperx_models():
+    global _whisperx_model, _align_model, _align_metadata
+    
+    device = "cpu"
+    compute_type = "int8"
+    
+    if _whisperx_model is None:
+        logger.info("[aligner] Loading WhisperX base.en model on CPU...")
+        _whisperx_model = whisperx.load_model("base.en", device, compute_type=compute_type)
+        
+    if _align_model is None:
+        logger.info("[aligner] Loading WhisperX Wav2Vec2 alignment model...")
+        _align_model, _align_metadata = whisperx.load_align_model(language_code="en", device=device)
+        
+    return _whisperx_model, _align_model, _align_metadata
 
+def _scrub(text):
+    return re.sub(r'[^\w\s]', '', text.lower()).strip()
 
-def _load_model():
-    """Lazy-load the MMS-300M alignment model onto CPU. Downloads once, then cached."""
-    global _alignment_model, _alignment_tokenizer
-    if _alignment_model is not None:
-        return _alignment_model, _alignment_tokenizer
-
-    logger.info("[aligner] Loading MMS-300M forced-alignment model (first use)…")
-    from ctc_forced_aligner import load_alignment_model
-    _alignment_model, _alignment_tokenizer = load_alignment_model(
-        device="cpu",
-        dtype="float32",
-    )
-    logger.info("[aligner] MMS-300M loaded.")
-    return _alignment_model, _alignment_tokenizer
-
-
-def _scrub_text(raw: str) -> str:
+def align_audio(wav_path: str, script_text: str, force: bool = False) -> list[dict]:
     """
-    Strip non-spoken content from raw script text so the aligner only sees
-    words that Kokoro actually voiced.
-    """
-    text = raw.strip()
-    # Remove markdown bold/italic markers
-    text = re.sub(r"\*{1,3}(.*?)\*{1,3}", r"\1", text)
-    # Remove bracketed labels like [Thesis], (Note:)
-    text = re.sub(r"[\[\(][^\]\)]{0,60}[\]\)]", "", text)
-    # Collapse multiple whitespace
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-
-def align_audio(wav_path: str, text: str, force: bool = False) -> list[dict]:
-    """
-    Align `text` to the audio at `wav_path` using MMS-300M forced alignment.
-
-    Returns a list of dicts:
-        [{"word": str, "start": float, "end": float}, ...]
-    where start/end are in seconds.
-
-    Saves (and caches) the result as `word_timestamps.json` in the same
-    directory as the .wav. Set `force=True` to bypass the cache.
-
-    Falls back to [] on any error — callers should handle the empty case
-    by degrading to syllable-based estimation.
+    Uses WhisperX for state-of-the-art forced alignment.
+    Returns: list of dicts with {"word": str, "start": float, "end": float}
     """
     if not wav_path or not os.path.exists(wav_path):
-        logger.warning(f"[aligner] wav not found: {wav_path}")
         return []
 
-    # ── Cache check ──────────────────────────────────────────────────────────
     json_path = os.path.splitext(wav_path)[0] + "_timestamps.json"
     if not force and os.path.exists(json_path):
         try:
             with open(json_path, "r") as f:
-                data = json.load(f)
-            logger.info(f"[aligner] Cache hit: {json_path} ({len(data)} words)")
-            return data
-        except Exception as e:
-            logger.warning(f"[aligner] Cache corrupt ({e}), re-aligning…")
+                return json.load(f)
+        except Exception:
+            pass
 
     try:
-        import torch
-        import torchaudio
-        from ctc_forced_aligner import (
-            generate_emissions,
-            get_alignments,
-            get_spans,
-            postprocess_results,
-            preprocess_text,
-        )
+        device = "cpu"
+        w_model, a_model, a_metadata = _get_whisperx_models()
+        
+        logger.info(f"[aligner] Transcribing {os.path.basename(wav_path)} with WhisperX...")
+        # 1. Transcribe
+        audio = whisperx.load_audio(wav_path)
+        result = w_model.transcribe(audio, batch_size=1)
+        
+        logger.info(f"[aligner] Aligning {os.path.basename(wav_path)} with Wav2Vec2...")
+        # 2. Align (Forced Alignment to sub-100ms precision)
+        result = whisperx.align(result["segments"], a_model, a_metadata, audio, device, return_char_alignments=False)
+        
+        # Extract word timestamps
+        spoken_words = []
+        for segment in result["segments"]:
+            for word_info in segment.get("words", []):
+                # Sometimes words might not have a start/end if they are silent or misaligned
+                if "start" in word_info and "end" in word_info:
+                    spoken_words.append({
+                        "word": word_info["word"].strip(),
+                        "start": round(word_info["start"], 3),
+                        "end": round(word_info["end"], 3)
+                    })
 
-        # ── Load & resample audio ─────────────────────────────────────────
-        model, tokenizer = _load_model()
-
-        waveform, sr = torchaudio.load(wav_path)
-        if sr != TARGET_SR:
-            resampler = torchaudio.transforms.Resample(sr, TARGET_SR)
-            waveform = resampler(waveform)
-
-        # MMS-300M expects mono
-        if waveform.shape[0] > 1:
-            waveform = waveform.mean(dim=0, keepdim=True)
-
-        waveform = waveform.to(dtype=torch.float32)
-
-        # ── Prepare text ─────────────────────────────────────────────────
-        clean = _scrub_text(text)
-        if not clean:
-            logger.warning("[aligner] Empty text after scrubbing.")
+        if not spoken_words:
+            logger.warning("[aligner] WhisperX found no alignable words.")
             return []
 
-        # ── Forced alignment ─────────────────────────────────────────────
-        emissions, stride = generate_emissions(model, waveform, batch_size=1)
-        tokens_starred, text_starred = preprocess_text(clean, language="eng")
-        segments, scores, blank_token = get_alignments(
-            emissions, tokens_starred, tokenizer
-        )
-        spans = get_spans(tokens_starred, segments, blank_token)
-        results = postprocess_results(text_starred, spans, stride, scores)
+        # --- 3. Fuzzy Alignment to Script (Fixing Drift / Drift Mismatches) ---
+        # Whisper might hallucinate or alter words. We force the timestamps 
+        # back onto our literal script words so the subtitles look correct.
+        script_words = script_text.split()
+        final_timestamps = []
+        
+        spoken_clean = [_scrub(w["word"]) for w in spoken_words]
+        script_clean = [_scrub(w) for w in script_words]
 
-        # ── Convert to simple word/start/end dicts ────────────────────────
-        timestamps = []
-        for entry in results:
-            word  = entry.get("text", "").strip()
-            start = round(float(entry.get("start", 0.0)), 4)
-            end   = round(float(entry.get("end",   0.0)), 4)
-            if word:
-                timestamps.append({"word": word, "start": start, "end": end})
+        sm = SequenceMatcher(None, script_clean, spoken_clean)
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag in ('equal', 'replace'):
+                for i, j in zip(range(i1, i2), range(j1, j2)):
+                    final_timestamps.append({
+                        "word": script_words[i],
+                        "start": spoken_words[j]["start"],
+                        "end": spoken_words[j]["end"]
+                    })
 
-        logger.info(
-            f"[aligner] Aligned {len(timestamps)} words in "
-            f"{os.path.basename(wav_path)}"
-        )
-
-        # ── Cache to disk ─────────────────────────────────────────────────
+        # Cache results
         with open(json_path, "w") as f:
-            json.dump(timestamps, f, indent=2)
-
-        return timestamps
+            json.dump(final_timestamps, f, indent=2)
+        
+        logger.info(f"[aligner] Successfully aligned {len(final_timestamps)} words.")
+        return final_timestamps
 
     except Exception as e:
-        logger.error(f"[aligner] Alignment failed for {wav_path}: {e}")
+        logger.error(f"[aligner] WhisperX alignment failed: {e}")
         return []
 
-
 def load_timestamps(wav_path: str) -> list[dict]:
-    """
-    Load cached word timestamps for a wav file, if available.
-    Returns [] if no cache exists (caller should fall back to syllable mode).
-    """
     json_path = os.path.splitext(wav_path)[0] + "_timestamps.json"
     if os.path.exists(json_path):
         try:

@@ -35,7 +35,10 @@ function ProjectDetail({ project, onClose, onMoved }) {
   const sd = project.script_data || {}
   const sections = sd.sections || {}
 
-  const NODES = [
+  const NODES = project.channel_template === 'zerourgency' ? [
+    {key:'hook',label:'🎯 Hook'},{key:'context',label:'📖 Context & History'},
+    {key:'deep_dive',label:'⚡ Deep Dive'},{key:'takeaway',label:'⚖️ Takeaway'},
+  ] : [
     {key:'hook',label:'🎯 Hook'},{key:'thesis',label:'📖 Thesis'},{key:'bridge_ab',label:'🔗 Bridge A→B'},
     {key:'antithesis',label:'⚡ Antithesis'},{key:'bridge_bc',label:'🔗 Bridge B→C'},{key:'synthesis',label:'⚖️ Synthesis'},
   ]
@@ -150,13 +153,17 @@ function ProjectDetail({ project, onClose, onMoved }) {
 // ── New Project Modal ──────────────────────────────────────────
 function NewProjectModal({ onClose, onCreate }) {
   const [topic, setTopic] = useState('')
+  const [channelTemplate, setChannelTemplate] = useState('still_point')
   const [busy,  setBusy]  = useState(false)
 
   const submit = async () => {
     if (!topic.trim()) return
     setBusy(true)
     try {
-      const r = await axios.post('/api/projects', { topic: topic.trim() })
+      const r = await axios.post('/api/projects', { 
+        topic: topic.trim(), 
+        channel_template: channelTemplate 
+      })
       onCreate(r.data)
     } catch(e) { console.error(e) }
     setBusy(false)
@@ -171,6 +178,13 @@ function NewProjectModal({ onClose, onCreate }) {
           <input type="text" value={topic} autoFocus onChange={e=>setTopic(e.target.value)}
             onKeyDown={e=>e.key==='Enter'&&submit()}
             placeholder="e.g. The commodification of human attention"/>
+        </div>
+        <div className="input-group">
+          <label>Channel Format</label>
+          <select value={channelTemplate} onChange={e=>setChannelTemplate(e.target.value)}>
+            <option value="still_point">⚖️ Still Point (Dialectic)</option>
+            <option value="zerourgency">📺 ZeroUrgency (Infotainment)</option>
+          </select>
         </div>
         <div style={{display:'flex',gap:10,justifyContent:'flex-end',marginTop:20}}>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>

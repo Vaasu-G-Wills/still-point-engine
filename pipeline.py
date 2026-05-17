@@ -13,7 +13,8 @@ from db import init_databases, insert_sqlite_record, get_all_scripts
 from prompts import (
     THESIS_PROMPT, ANTITHESIS_PROMPT, SYNTHESIS_PROMPT,
     EDITOR_PROMPT, EXCLUSION_HEADER, REWRITE_INSTRUCTION,
-    HOOK_PROMPT, BRIDGE_AB_PROMPT, BRIDGE_BC_PROMPT
+    HOOK_PROMPT, BRIDGE_AB_PROMPT, BRIDGE_BC_PROMPT,
+    ZU_HOOK_PROMPT, ZU_CONTEXT_PROMPT, ZU_DEEP_DIVE_PROMPT, ZU_TAKEAWAY_PROMPT
 )
 from research import get_web_context
 from reviewer import get_repetition_penalty
@@ -96,14 +97,25 @@ def clean_llm_conversational_filler(text: str) -> str:
         first_line = lines[0].strip().lower()
         fillers = [
             "here is the", "here's the", "here's a", "here is a",
-            "certainly", "sure", "of course",
-            "rewritten text", "revised text", "edited text",
+            "certainly", "sure", "of course", "absolutely",
+            "rewritten text", "revised text", "edited text", "refined version",
             "here is an", "output:", "here are the",
             "hook:", "opening:", "bridge:", "transition:",
             "potential opening", "potential hook",
             "this could work", "grabbing attention",
+            "here's my attempt", "here is my attempt", "attempt at rewriting",
+            "elevate the prose", "remove ai slop", "revised version",
+            "certainly! here is", "sure! here is",
         ]
-        if any(f in first_line for f in fillers) and len(first_line) < 120:
+        
+        # Aggressive check for lines ending in colon that look like labels
+        if (first_line.endswith(':') or first_line.endswith('：')) and len(first_line) < 150:
+            if any(f in first_line for f in ["here is", "here's", "revised", "rewritten", "output", "script", "attempt"]):
+                lines.pop(0)
+                while lines and not lines[0].strip(): lines.pop(0)
+                continue
+
+        if any(f in first_line for f in fillers) and len(first_line) < 150:
             lines.pop(0)
             while lines and not lines[0].strip():
                 lines.pop(0)
@@ -164,59 +176,87 @@ def run_pipeline(topic: str, yield_callback=None, **kwargs):
     if yield_callback: yield_callback("status", "🌐 Research Agent fetching fresh real-world context...")
     web_context = get_web_context(topic)
 
-    # Node Hook: Provocative Intro
-    if yield_callback: yield_callback("status", "🎯 Generating Hook (Intro)...")
-    hook_words = 60 if config.DEBUG_MODE else 80
-    hook = generate_node(HOOK_PROMPT, {
-        "topic": topic, "exclusion_block": exclusion_block, "target_words": hook_words
-    }, provider)
-    if yield_callback: yield_callback("hook", hook)
+    script_format = kwargs.get("script_format", "still_point")
+    is_zu = (script_format == "zerourgency")
+    
+    # Generate nodes based on format
+    if is_zu:
+        if yield_callback: yield_callback("status", "🎯 Generating Hook (ZeroUrgency)...")
+        hook = generate_node(ZU_HOOK_PROMPT, {
+            "topic": topic, "exclusion_block": exclusion_block, "target_words": 60 if config.DEBUG_MODE else 80
+        }, provider)
+        if yield_callback: yield_callback("hook", hook)
 
-    # Node A: Thesis
-    if yield_callback: yield_callback("status", "🧠 Generating Node A (Thesis)...")
-    target_words_thesis = 150 if config.DEBUG_MODE else 600
-    thesis = generate_node(THESIS_PROMPT, {
-        "topic": topic, "exclusion_block": exclusion_block, "web_context": web_context, "target_words": target_words_thesis
-    }, provider)
-    if yield_callback: yield_callback("thesis", thesis)
+        if yield_callback: yield_callback("status", "📖 Generating Context...")
+        context = generate_node(ZU_CONTEXT_PROMPT, {
+            "topic": topic, "exclusion_block": exclusion_block, "web_context": web_context, "target_words": 150 if config.DEBUG_MODE else 400
+        }, provider)
+        if yield_callback: yield_callback("context", context)
 
-    # Bridge A→B
-    if yield_callback: yield_callback("status", "🔗 Generating Bridge A→B (Transition)...")
-    bridge_ab = generate_node(BRIDGE_AB_PROMPT, {
-        "topic": topic, "thesis_text": thesis
-    }, provider)
-    if yield_callback: yield_callback("bridge_ab", bridge_ab)
+        if yield_callback: yield_callback("status", "⚡ Generating Deep Dive...")
+        deep_dive = generate_node(ZU_DEEP_DIVE_PROMPT, {
+            "topic": topic, "exclusion_block": exclusion_block, "web_context": web_context, "target_words": 150 if config.DEBUG_MODE else 500
+        }, provider)
+        if yield_callback: yield_callback("deep_dive", deep_dive)
 
-    # Node B: Antithesis
-    if yield_callback: yield_callback("status", "⚡ Generating Node B (Antithesis)...")
-    target_words_anti = 150 if config.DEBUG_MODE else 600
-    antithesis = generate_node(ANTITHESIS_PROMPT, {
-        "topic": topic, "thesis_text": thesis, "exclusion_block": exclusion_block, "web_context": web_context, "target_words": target_words_anti
-    }, provider)
-    if yield_callback: yield_callback("antithesis", antithesis)
+        if yield_callback: yield_callback("status", "⚖️ Generating Takeaway...")
+        takeaway = generate_node(ZU_TAKEAWAY_PROMPT, {
+            "topic": topic, "exclusion_block": exclusion_block, "web_context": web_context, "target_words": 150 if config.DEBUG_MODE else 350
+        }, provider)
+        if yield_callback: yield_callback("takeaway", takeaway)
 
-    # Bridge B→C
-    if yield_callback: yield_callback("status", "🔗 Generating Bridge B→C (Transition)...")
-    bridge_bc = generate_node(BRIDGE_BC_PROMPT, {
-        "topic": topic
-    }, provider)
-    if yield_callback: yield_callback("bridge_bc", bridge_bc)
+        nodes_to_edit = [("Context", context), ("Deep_Dive", deep_dive), ("Takeaway", takeaway)]
+    else:
+        # Node Hook: Provocative Intro
+        if yield_callback: yield_callback("status", "🎯 Generating Hook (Intro)...")
+        hook = generate_node(HOOK_PROMPT, {
+            "topic": topic, "exclusion_block": exclusion_block, "target_words": 60 if config.DEBUG_MODE else 80
+        }, provider)
+        if yield_callback: yield_callback("hook", hook)
 
-    # Node C: Synthesis
-    if yield_callback: yield_callback("status", "⚖️ Generating Node C (Synthesis)...")
-    target_words_synth = 150 if config.DEBUG_MODE else 800
-    synthesis = generate_node(SYNTHESIS_PROMPT, {
-        "topic": topic, "thesis_text": thesis, "antithesis_text": antithesis,
-        "exclusion_block": exclusion_block, "web_context": web_context, "target_words": target_words_synth
-    }, provider)
-    if yield_callback: yield_callback("synthesis", synthesis)
+        # Node A: Thesis
+        if yield_callback: yield_callback("status", "🧠 Generating Node A (Thesis)...")
+        thesis = generate_node(THESIS_PROMPT, {
+            "topic": topic, "exclusion_block": exclusion_block, "web_context": web_context, "target_words": 150 if config.DEBUG_MODE else 600
+        }, provider)
+        if yield_callback: yield_callback("thesis", thesis)
+
+        # Bridge A→B
+        if yield_callback: yield_callback("status", "🔗 Generating Bridge A→B (Transition)...")
+        bridge_ab = generate_node(BRIDGE_AB_PROMPT, {
+            "topic": topic, "thesis_text": thesis
+        }, provider)
+        if yield_callback: yield_callback("bridge_ab", bridge_ab)
+
+        # Node B: Antithesis
+        if yield_callback: yield_callback("status", "⚡ Generating Node B (Antithesis)...")
+        antithesis = generate_node(ANTITHESIS_PROMPT, {
+            "topic": topic, "thesis_text": thesis, "exclusion_block": exclusion_block, "web_context": web_context, "target_words": 150 if config.DEBUG_MODE else 600
+        }, provider)
+        if yield_callback: yield_callback("antithesis", antithesis)
+
+        # Bridge B→C
+        if yield_callback: yield_callback("status", "🔗 Generating Bridge B→C (Transition)...")
+        bridge_bc = generate_node(BRIDGE_BC_PROMPT, {
+            "topic": topic
+        }, provider)
+        if yield_callback: yield_callback("bridge_bc", bridge_bc)
+
+        # Node C: Synthesis
+        if yield_callback: yield_callback("status", "⚖️ Generating Node C (Synthesis)...")
+        synthesis = generate_node(SYNTHESIS_PROMPT, {
+            "topic": topic, "thesis_text": thesis, "antithesis_text": antithesis,
+            "exclusion_block": exclusion_block, "web_context": web_context, "target_words": 150 if config.DEBUG_MODE else 800
+        }, provider)
+        if yield_callback: yield_callback("synthesis", synthesis)
+        
+        nodes_to_edit = [("Thesis", thesis), ("Antithesis", antithesis), ("Synthesis", synthesis)]
 
     # Node D & E: The Editor Agent & Repetition Reviewer
     past_texts_buffer = ""
-    nodes = [("Thesis", thesis), ("Antithesis", antithesis), ("Synthesis", synthesis)]
     final_nodes = {}
     
-    for node_name, draft_text in nodes:
+    for node_name, draft_text in nodes_to_edit:
         if yield_callback: yield_callback("status", f"🕵️ Editor Agent scrubbing AI Slop from {node_name}...")
         current_text = generate_node(EDITOR_PROMPT, {"draft_text": draft_text, "rewrite_prompt": ""}, provider)
         
@@ -238,9 +278,34 @@ def run_pipeline(topic: str, yield_callback=None, **kwargs):
         past_texts_buffer += " " + current_text
         if yield_callback: yield_callback(node_name.lower(), current_text)
 
-    thesis = final_nodes["thesis"]
-    antithesis = final_nodes["antithesis"]
-    synthesis = final_nodes["synthesis"]
+    # Compile the final script sections
+    sections = {"hook": hook}
+    if is_zu:
+        sections["context"]   = final_nodes["context"]
+        sections["deep_dive"] = final_nodes["deep_dive"]
+        sections["takeaway"]  = final_nodes["takeaway"]
+        
+        full_script = (
+            f"{hook}\n\n"
+            f"{sections['context']}\n\n"
+            f"{sections['deep_dive']}\n\n"
+            f"{sections['takeaway']}"
+        )
+    else:
+        sections["thesis"]     = final_nodes["thesis"]
+        sections["bridge_ab"]  = bridge_ab
+        sections["antithesis"] = final_nodes["antithesis"]
+        sections["bridge_bc"]  = bridge_bc
+        sections["synthesis"]  = final_nodes["synthesis"]
+        
+        full_script = (
+            f"{hook}\n\n"
+            f"{sections['thesis']}\n\n"
+            f"{bridge_ab}\n\n"
+            f"{sections['antithesis']}\n\n"
+            f"{bridge_bc}\n\n"
+            f"{sections['synthesis']}"
+        )
 
     # Unload Ollama explicitly from the GPU to make room for Kokoro TTS
     if yield_callback: yield_callback("status", "♻️ Freeing GPU Memory (Unloading Ollama)...")
@@ -259,14 +324,6 @@ def run_pipeline(topic: str, yield_callback=None, **kwargs):
     # Archive and Save - Topic Folder Structure
     if yield_callback: yield_callback("status", "💾 Archiving and Vectorizing...")
     
-    full_script = (
-        f"{hook}\n\n"
-        f"{thesis}\n\n"
-        f"{bridge_ab}\n\n"
-        f"{antithesis}\n\n"
-        f"{bridge_bc}\n\n"
-        f"{synthesis}"
-    )
     word_count = len(full_script.split())
     
     timestamp = datetime.now().isoformat()
@@ -286,26 +343,20 @@ def run_pipeline(topic: str, yield_callback=None, **kwargs):
         from tts_engine import generate_tts_audio
         if yield_callback: yield_callback("status", f"🎙️ Generating TTS Audio ({voice}) via Kokoro-82M...")
         
-        generate_tts_audio(hook, voice, os.path.join(audio_dir, "hook.wav"))
-        generate_tts_audio(thesis, voice, os.path.join(audio_dir, "thesis.wav"))
-        generate_tts_audio(bridge_ab, voice, os.path.join(audio_dir, "bridge_ab.wav"))
-        generate_tts_audio(antithesis, voice, os.path.join(audio_dir, "antithesis.wav"))
-        generate_tts_audio(bridge_bc, voice, os.path.join(audio_dir, "bridge_bc.wav"))
-        generate_tts_audio(synthesis, voice, os.path.join(audio_dir, "synthesis.wav"))
+        from aligner import align_audio
+        for section_name, section_text in sections.items():
+            wav_path = os.path.join(audio_dir, f"{section_name}.wav")
+            generate_tts_audio(section_text, voice, wav_path)
+            # Generate word-level timestamps for robust highlighting
+            if yield_callback: yield_callback("status", f"⏱️ Aligning {section_name}...")
+            align_audio(wav_path, section_text)
 
     output_data = {
         "topic": topic,
         "generated_at": timestamp,
         "word_count": word_count,
         "exclusions_used": exclusions,
-        "sections": {
-            "hook": hook,
-            "thesis": thesis,
-            "bridge_ab": bridge_ab,
-            "antithesis": antithesis,
-            "bridge_bc": bridge_bc,
-            "synthesis": synthesis
-        },
+        "sections": sections,
         "full_script": full_script,
         "folder_path": topic_dir
     }

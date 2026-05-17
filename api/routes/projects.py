@@ -11,7 +11,8 @@ router = APIRouter()
 
 
 class CreateProjectRequest(BaseModel):
-    topic: str
+    topic:            str
+    channel_template: str = "still_point"
 
 
 class UpdatePhaseRequest(BaseModel):
@@ -41,7 +42,7 @@ def create_project(req: CreateProjectRequest):
     stamp  = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     folder = os.path.join(OUTPUT_DIR, f"{stamp}_{safe}")
     os.makedirs(folder, exist_ok=True)
-    return db_create(req.topic, folder)
+    return db_create(req.topic, folder, channel_template=req.channel_template)
 
 
 @router.get("/projects/{project_id}")
